@@ -1,10 +1,13 @@
 import re
+import os
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
+from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-BOT_TOKEN = "8660248537:AAFTWAcQncXeaa7OsbLPDKahu4JvL2CQWKA"
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Matches ABA PAY messages with any currency symbol ($, ៛, ฿, etc.)
 # Uses [^\d\s] so ANY non-digit non-space prefix (currency symbol) is captured.
