@@ -18,6 +18,14 @@ ABA_PAY_PATTERN = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Matches ACLEDA messages:
+# "Received 6,000 KHR from 081 *** 854 VUT NAVY, 08-Mar-2026 11:13AM..."
+# "Received 7,000 KHR from SREYLEAKH VOENG,ABA Bank by KHQR,on 08-Mar-2026 11:23AM..."
+ACLEDA_PATTERN = re.compile(
+    r"Received\s+([0-9,]+(?:\.[0-9]{1,2})?)\s+(KHR|USD)\s+from\s+(.+?),\s*(?:.*?on\s+)?(\d{2}-\w+-\d{4})\s+(\d+:\d+\s*(?:AM|PM))",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def get_currency(symbol: str) -> str:
     """$ = USD, anything else (₿ ៛ ฿ etc.) = KHR."""
@@ -45,9 +53,8 @@ def get_payments(user_id: int) -> list[Payment]:
 
 def parse_date(date_str: str) -> tuple[date, str]:
     """Parse 'Mar 08, 11:16 AM' or 'Mar 08 11:16 AM' → (date object, formatted string)."""
-    # Normalise: collapse multiple spaces, remove extra commas
-    s = re.sub(r",", "", date_str.strip())   # remove commas → 'Mar 08 11:16 AM'
-    s = re.sub(r"\s+", " ", s)               # collapse spaces
+    s = re.sub(r",", "", date_str.strip())
+    s = re.sub(r"\s+", " ", s)
     year = datetime.now().year
     for fmt in ("%b %d %I:%M %p",):
         try:
@@ -58,14 +65,25 @@ def parse_date(date_str: str) -> tuple[date, str]:
     return date.today(), date_str.strip()
 
 
+def parse_acleda_date(date_part: str, time_part: str) -> tuple[date, str]:
+    """Parse '08-Mar-2026' + '11:13AM' → (date object, formatted string)."""
+    s = f"{date_part.strip()} {time_part.strip()}"
+    s = re.sub(r"\s+", " ", s)
+    for fmt in ("%d-%b-%Y %I:%M%p", "%d-%b-%Y %I:%M %p"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.date(), dt.strftime("%b %d %I:%M %p")
+        except ValueError:
+            continue
+    return date.today(), s
+
+
 def parse_aba_message(text: str) -> Payment | None:
     """Extract payment details from an ABA PAY notification message."""
     match = ABA_PAY_PATTERN.search(text)
     if not match:
-        print(f"[DEBUG] No match for text: {repr(text[:120])}")
         return None
     symbol, amount_str, payer, account, date_str, trx_id = match.groups()
-    print(f"[DEBUG] Matched: symbol={repr(symbol)} amount={amount_str} payer={payer} date={date_str}")
     amount = float(amount_str.replace(",", ""))
     currency = get_currency(symbol)
     pay_date, time_str = parse_date(date_str)
@@ -77,6 +95,27 @@ def parse_aba_message(text: str) -> Payment | None:
         pay_date=pay_date,
         time_str=time_str,
         trx_id=trx_id,
+    )
+
+
+def parse_acleda_message(text: str) -> Payment | None:
+    """Extract payment details from an ACLEDA notification message."""
+    match = ACLEDA_PATTERN.search(text)
+    if not match:
+        return None
+    amount_str, currency, payer, date_part, time_part = match.groups()
+    amount = float(amount_str.replace(",", ""))
+    pay_date, time_str = parse_acleda_date(date_part, time_part)
+    # Clean up payer: strip trailing bank info like ",ABA Bank by KHQR"
+    payer_clean = re.split(r",\s*\w+ Bank", payer)[0].strip()
+    return Payment(
+        currency=currency.upper(),
+        amount=amount,
+        payer=payer_clean,
+        account="",
+        pay_date=pay_date,
+        time_str=time_str,
+        trx_id="—",
     )
 
 
@@ -233,6 +272,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Try ABA PAY parse first — record silently, no reply
     payment = parse_aba_message(text)
+    if not payment:
+        # Try ACLEDA format
+        payment = parse_acleda_message(text)
     if payment:
         get_payments(update.effective_user.id).append(payment)
         return
